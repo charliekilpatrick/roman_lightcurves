@@ -1,0 +1,12 @@
+# Conda environment for roman_lightcurves. Install Python and numba/llvmlite
+# with conda (avoids building from source), then install this package via pip.
+name: roman_lightcurves
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numba  # redback dependency; install from conda to avoid pip build failures
+  - pip
+  - pip:
+    - -e .

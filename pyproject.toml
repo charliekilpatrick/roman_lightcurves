@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "roman-lightcurves"
+version = "0.1.0"
+description = "Roman filter light curves for transients (e.g. kilonovae)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "astropy>=5.0",
+    "matplotlib>=3.5",
+    "numpy>=1.20",
+    "redback",
+    "sncosmo>=2.10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lightcurves*"]
