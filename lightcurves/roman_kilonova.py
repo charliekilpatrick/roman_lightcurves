@@ -34,7 +34,7 @@ BAND_COLORS = {
     "roman_f158": "red",
     "lsstg": "blue",
     "lsstr": "green",
-    "lssti": "darkgoldenrod",  # dark yellow
+    "lssti": "darkgoldenrod",  # similar to gold but darker for contrast
 }
 
 # Roman: default observation epochs (days) to mark on the light curve
@@ -50,16 +50,56 @@ _NIGHT0_SCAN_TIMES = [
     _NIGHT0_FIRST_SCAN_DAY + _NIGHT0_SCAN_SEP_DAY,
     _NIGHT0_FIRST_SCAN_DAY + 2.0 * _NIGHT0_SCAN_SEP_DAY,
 ]
+# Days 1–3: observations at ~1.5, 2.5, 3.5 days from merger
+LSST_NIGHTS_1_2_3_DAYS = [1.5, 2.5, 3.5]
 LSST_GOLD_OBS_TIMES = {
-    "lsstg": _NIGHT0_SCAN_TIMES.copy(),  # g only on Night 0 (3 scans)
-    "lsstr": _NIGHT0_SCAN_TIMES + [2.0, 3.0, 4.0],  # Night 0 (3 scans) + Nights 1–3
-    "lssti": _NIGHT0_SCAN_TIMES + [2.0, 3.0, 4.0],
+    "lsstg": _NIGHT0_SCAN_TIMES.copy(),  # g only on Night 0 (~0.5 days + 2 more scans)
+    "lsstr": _NIGHT0_SCAN_TIMES + LSST_NIGHTS_1_2_3_DAYS,  # Night 0 + days 1–3
+    "lssti": _NIGHT0_SCAN_TIMES + LSST_NIGHTS_1_2_3_DAYS,
 }
 # LSST Gold strategy 5σ limiting magnitudes (AB)
-LSST_LIMIT_MAG = {"lsstg": 26.0, "lsstr": 25.7, "lssti": 25.0}
+LSST_LIMIT_MAG = {"lsstg": 26.0, "lsstr": 25.7, "lssti": 24.8}
+# Roman 5σ limiting magnitudes (AB)
+ROMAN_LIMIT_MAG = {"roman_f129": 25.5, "roman_f158": 25.5}
+# Combined 5σ limits for all bands (used for upper limits and for Magerr)
+LIMIT_MAG_5SIGMA = {**ROMAN_LIMIT_MAG, **LSST_LIMIT_MAG}
+
+# Magnitude error floor (mag)
+MAGERR_FLOOR = 0.01
+
+
+def magnitude_error_poisson(mag: float, limit_mag: float, floor: float = MAGERR_FLOOR) -> float:
+    """
+    Magnitude uncertainty assuming Poisson-dominated photometry down to a 5σ limit.
+
+    At the limit magnitude, SNR = 5 so σ_m = 1.086/5 ≈ 0.217 mag. For brighter
+    sources, SNR ∝ 10^(0.2*(m_lim - m)), so σ_m = (1.086/5) * 10^(-0.2*(m_lim - m)).
+    """
+    sigma_at_limit = 1.086 / 5.0
+    sigma_m = sigma_at_limit * (10.0 ** (-0.2 * (limit_mag - mag)))
+    return max(floor, float(sigma_m))
 
 # Redshift chosen so luminosity distance is exactly 240 Mpc (Planck18)
 GW190814_REDSHIFT = 0.05212231244007938
+
+# GW190814 observed merger time (2019-08-14 21:10:39 UTC); observer-frame t_obs added for MJD
+MERGER_MJD_GW190814 = 58709.88239583
+
+# Band -> (Source, Filter) for light curve serialization
+BAND_TO_SOURCE = {
+    "roman_f129": "Roman",
+    "roman_f158": "Roman",
+    "lsstg": "LSST",
+    "lsstr": "LSST",
+    "lssti": "LSST",
+}
+BAND_TO_FILTER = {
+    "roman_f129": "F129",
+    "roman_f158": "F158",
+    "lsstg": "g",
+    "lsstr": "r",
+    "lssti": "i",
+}
 
 
 def _ensure_roman_bands_registered() -> None:
@@ -101,6 +141,7 @@ def run_roman_kilonova(
     save_path: str | None = None,
     redshift: float | None = None,
     obs_times: list[float] | None = None,
+    lightcurve_data_path: str | None = None,
 ) -> "matplotlib.figure.Figure":
     """
     Generate an AT2017gfo-like (Villar+2017) three-component kilonova light curve
@@ -163,6 +204,10 @@ def run_roman_kilonova(
         "axes.titlesize": 14,
         "legend.fontsize": 11,
     }
+    # Rows for light curve CSV: (Source, MJD, Filter, Mag, Magerr, Maglimit); t_obs is observer-frame (time dilation in redshift)
+    lightcurve_rows = []
+    merger_mjd = MERGER_MJD_GW190814
+
     with plt.rc_context(serif_rc):
         fig, ax = plt.subplots(figsize=(7.5, 7))
         all_obs_t = []
@@ -184,7 +229,7 @@ def run_roman_kilonova(
                     **params,
                 )
                 mag_obs = np.atleast_1d(mag_obs).flatten()
-                limit_mag = LSST_LIMIT_MAG.get(band)
+                limit_mag = LIMIT_MAG_5SIGMA.get(band)
                 for ti, mi in zip(t_obs, mag_obs):
                     all_obs_t.append(ti)
                     if limit_mag is not None and mi > limit_mag:
@@ -192,8 +237,13 @@ def run_roman_kilonova(
                         all_obs_mag.append(limit_mag + 0.35)  # arrow tip for y-range
                     else:
                         all_obs_mag.append(mi)
+                source = BAND_TO_SOURCE.get(band, "Unknown")
+                filter_name = BAND_TO_FILTER.get(band, band)
                 for ti, mi in zip(t_obs, mag_obs):
+                    # MJD = merger + observer-frame days (time dilation already in t_obs)
+                    mjd = merger_mjd + ti
                     if limit_mag is not None and mi > limit_mag:
+                        lightcurve_rows.append((source, mjd, filter_name, None, None, limit_mag))
                         # Upper limit: arrow at limit magnitude, pointing down
                         ax.annotate(
                             "",
@@ -207,6 +257,8 @@ def run_roman_kilonova(
                             zorder=5,
                         )
                     else:
+                        magerr = magnitude_error_poisson(mi, limit_mag) if limit_mag is not None else MAGERR_FLOOR
+                        lightcurve_rows.append((source, mjd, filter_name, mi, magerr, None))
                         ax.scatter(
                             [ti],
                             [mi],
@@ -229,12 +281,12 @@ def run_roman_kilonova(
             ax.set_ylim(mag_max, mag_min)  # brighter up
         else:
             ax.set_ylim(ax.get_ylim()[::-1])  # brighter up
-        # Axis and tick label sizes (reduced by 1/3 from prior 30 pt → 20 pt)
-        label_fontsize = 20
-        tick_fontsize = 20
+        # Axis and tick label sizes (30% larger than 20 pt)
+        label_fontsize = 26
+        tick_fontsize = 26
         # Redback uses observer-frame time in days (not rest-frame)
         ax.set_xlabel(
-            "Observer-frame time (days)",
+            "Observer-frame days from merger",
             fontsize=label_fontsize,
             fontfamily="serif",
         )
@@ -281,12 +333,12 @@ def run_roman_kilonova(
         # LSST Gold event strategy: just below luminosity distance, inside frame
         ax.text(
             0.97,
-            0.62,
-            "LSST circles: Gold event strategy\n"
-            "(Night 0: 3× gri scans, 95 min apart; Nights 1–3: r+i)\n"
-            "Rubin ToO 2024 (arxiv.org/abs/2411.04793)",
+            0.84,
+            "LSST: Gold strategy\n"
+            "Night 0: 3× gri (95 min apart);\n"
+            "Nights 1–3: r+i. Rubin ToO 2024.",
             transform=ax.transAxes,
-            fontsize=12,
+            fontsize=10,
             fontfamily="serif",
             verticalalignment="top",
             horizontalalignment="right",
@@ -296,5 +348,45 @@ def run_roman_kilonova(
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    # Serialize light curve to CSV in data directory
+    if lightcurve_rows:
+        out_path = lightcurve_data_path
+        if out_path is None and save_path:
+            from pathlib import Path
+            data_dir = Path(save_path).resolve().parent.parent / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            stem = Path(save_path).stem
+            out_path = str(data_dir / f"{stem}_lightcurve.csv")
+        if out_path:
+            from pathlib import Path
+            Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+            with open(out_path, "w") as f:
+                f.write("Source, MJD, Filter, Mag, Magerr, Maglimit\n")
+                for (src, mjd, flt, mag, magerr, maglimit) in lightcurve_rows:
+                    mag_s = "" if mag is None else f"{mag:.4f}"
+                    err_s = "" if magerr is None else f"{magerr:.4f}"
+                    lim_s = "" if maglimit is None else f"{maglimit:.4f}"
+                    f.write(f'"{src}", {mjd:.5f}, "{flt}", {mag_s}, {err_s}, {lim_s}\n')
+            print(f"Saved light curve data to {out_path}")
+
+    # Write model light curves as ASCII (rest-frame phase, absolute magnitude per band)
+    if save_path and bands:
+        from pathlib import Path
+        z = params["redshift"]
+        d_L_pc = Planck18.luminosity_distance(z).to("pc").value
+        phase_rest = times / (1.0 + z)
+        data_dir = Path(save_path).resolve().parent.parent / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        stem = Path(save_path).stem
+        model_path = data_dir / f"{stem}_model_lightcurves.txt"
+        with open(model_path, "w") as f:
+            filter_names = [BAND_TO_FILTER.get(b, b) for b in bands]
+            f.write("# Rest-frame phase (days) and absolute magnitude (AB) per band\n")
+            f.write("phase_rest_day " + " ".join(filter_names) + "\n")
+            for i in range(len(times)):
+                M_list = [mags[b][i] - 5.0 * np.log10(d_L_pc / 10.0) for b in bands]
+                f.write(f"{phase_rest[i]:.6f} " + " ".join(f"{M:.4f}" for M in M_list) + "\n")
+        print(f"Saved model light curves to {model_path}")
 
     return fig
